@@ -3,7 +3,7 @@ services:
     name: splitease-backend
     env: python
     buildCommand: pip install -r requirements.txt && python manage.py migrate --no-input && python manage.py collectstatic --no-input
-    startCommand: daphne -b 0.0.0.0 -p $PORT config.asgi:application
+    startCommand: gunicorn config.asgi:application -k uvicorn.workers.UvicornWorker -b 0.0.0.0:$PORT
     envVars:
       - key: DEBUG
         value: False
