@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { getGroup } from '../api/groups';
 import { uploadCSV, commitCSV } from '../api/expenses';
+import { searchUsers } from '../api/auth';
 
 export default function ImportCSV() {
   const { id: groupId } = useParams();
@@ -20,8 +21,9 @@ export default function ImportCSV() {
   const [issues, setIssues] = useState([]);
   const [roommates, setRoommates] = useState([]);
   
-  // Local resolutions mapping: issueId -> { resolution_selected, resolution_details, row_data_fixed }
+  // Local resolutions mapping: issueId -> { resolution_selected, confirmed, resolution_details, row_data_fixed }
   const [resolutions, setResolutions] = useState({});
+  const [searchStates, setSearchStates] = useState({});
   
   // Timeline dates: name -> { joined_date, left_date, still_active }
   const [timelineDates, setTimelineDates] = useState({
@@ -91,14 +93,29 @@ export default function ImportCSV() {
       
       // Initialize resolutions for the loaded issues
       const initialResolutions = {};
+      const initialSearchStates = {};
       data.issues.forEach((issue) => {
         initialResolutions[issue.id] = {
           resolution_selected: issue.resolution_selected || 'ignore',
+          confirmed: false,
           resolution_details: issue.resolution_details || {},
           row_data_fixed: { ...issue.row_data },
         };
+        if (issue.resolution_selected === 'add_to_group' && issue.resolution_details?.user_id) {
+          initialSearchStates[issue.id] = {
+            query: issue.resolution_details.user_email || '',
+            loading: false,
+            result: {
+              id: issue.resolution_details.user_id,
+              name: issue.resolution_details.user_name || issue.resolution_details.csv_name || '',
+              email: issue.resolution_details.user_email || '',
+            },
+            error: ''
+          };
+        }
       });
       setResolutions(initialResolutions);
+      setSearchStates(initialSearchStates);
       setSuccess('CSV uploaded and analyzed successfully. Please review the issues below.');
     } catch (err) {
       setError(err.response?.data?.detail || 'Error uploading CSV file.');
@@ -117,27 +134,148 @@ export default function ImportCSV() {
     }));
   };
 
-  const handleResolutionChange = (issueId, key, value) => {
-    setResolutions((prev) => ({
+  const isPayerIssue = (issue) => {
+    const paidByCol = Object.keys(issue.row_data).find((h) => h.toLowerCase().includes('paid') || h.toLowerCase().includes('payer'));
+    const paidByHeader = paidByCol || 'Paid By';
+    return issue.issue_type === 'fuzzy_name' || 
+           (issue.issue_type === 'missing_data' && 
+            (issue.description.toLowerCase().includes('payer') || 
+             issue.description.toLowerCase().includes('paid_by') ||
+             issue.description.includes(paidByHeader)));
+  };
+
+  const getPayerNameOfIssue = (iss) => {
+    if (!iss || !iss.row_data) return '';
+    const paidByCol = Object.keys(iss.row_data).find((h) => h.toLowerCase().includes('paid') || h.toLowerCase().includes('payer'));
+    return paidByCol ? (iss.row_data[paidByCol] || '').trim() : '';
+  };
+
+  const handleSearchUser = async (issueId, email) => {
+    if (!email.trim()) return;
+    setSearchStates(prev => ({
       ...prev,
-      [issueId]: {
-        ...prev[issueId],
-        [key]: value,
-      },
+      [issueId]: { ...(prev[issueId] || {}), loading: true, error: '', result: null }
     }));
+    try {
+      const res = await searchUsers(email);
+      const results = res.data?.results || [];
+      if (results.length > 0) {
+        setSearchStates(prev => ({
+          ...prev,
+          [issueId]: { ...(prev[issueId] || {}), loading: false, result: results[0] }
+        }));
+      } else {
+        setSearchStates(prev => ({
+          ...prev,
+          [issueId]: { ...(prev[issueId] || {}), loading: false, error: 'No user found with this email.' }
+        }));
+      }
+    } catch (err) {
+      setSearchStates(prev => ({
+        ...prev,
+        [issueId]: { ...(prev[issueId] || {}), loading: false, error: 'Failed to search user.' }
+      }));
+    }
+  };
+
+  const handlePayerResolutionUpdate = (issueId, fields) => {
+    setResolutions((prev) => {
+      const currentIssue = issues.find((iss) => iss.id === issueId);
+      if (!currentIssue) return prev;
+
+      const payerName = getPayerNameOfIssue(currentIssue).toLowerCase();
+      const updated = { ...prev };
+
+      // Find all target issues with same payer name for session sync
+      const targetIssueIds = [issueId];
+      if (payerName && payerName.trim() !== '') {
+        issues.forEach((iss) => {
+          if (iss.id !== issueId && isPayerIssue(iss) && getPayerNameOfIssue(iss).toLowerCase() === payerName) {
+            targetIssueIds.push(iss.id);
+          }
+        });
+      }
+
+      // Apply updates to all matching target issues (session-wide propagation)
+      targetIssueIds.forEach((id) => {
+        const issObj = issues.find((iss) => iss.id === id);
+        if (!issObj) return;
+
+        const currentRes = prev[id] || {};
+        const newDetails = {
+          ...(currentRes.resolution_details || {}),
+          ...(fields.resolution_details || {})
+        };
+
+        const newSelection = fields.hasOwnProperty('resolution_selected') 
+          ? fields.resolution_selected 
+          : currentRes.resolution_selected;
+
+        const newConfirmed = fields.hasOwnProperty('confirmed')
+          ? fields.confirmed
+          : currentRes.confirmed;
+
+        updated[id] = {
+          ...currentRes,
+          resolution_selected: newSelection,
+          confirmed: newConfirmed,
+          resolution_details: newDetails,
+        };
+
+        // Update row_data_fixed paidByCol
+        const paidByCol = Object.keys(issObj.row_data).find((h) => h.toLowerCase().includes('paid') || h.toLowerCase().includes('payer'));
+        if (paidByCol) {
+          if (newSelection === 'map_user') {
+            const memberId = newDetails.user_id;
+            const memberName = group?.members?.find((m) => m.user.id === memberId)?.user?.name || newDetails.user_name || '';
+            updated[id].row_data_fixed[paidByCol] = memberName;
+          } else if (newSelection === 'create_new_user') {
+            updated[id].row_data_fixed[paidByCol] = newDetails.name || '';
+          } else if (newSelection === 'add_to_group') {
+            const memberId = newDetails.user_id;
+            const memberName = group?.members?.find((m) => m.user.id === memberId)?.user?.name || newDetails.user_name || newDetails.csv_name || issObj.row_data[paidByCol] || '';
+            updated[id].row_data_fixed[paidByCol] = memberName;
+          } else if (newSelection === 'ignore' || newSelection === 'skip') {
+            updated[id].row_data_fixed[paidByCol] = issObj.row_data[paidByCol];
+          }
+        }
+      });
+
+      return updated;
+    });
+  };
+
+  const handleResolutionChange = (issueId, key, value) => {
+    const issue = issues.find((iss) => iss.id === issueId);
+    if (issue && isPayerIssue(issue)) {
+      handlePayerResolutionUpdate(issueId, { [key]: value });
+    } else {
+      setResolutions((prev) => ({
+        ...prev,
+        [issueId]: {
+          ...prev[issueId],
+          [key]: value,
+        }
+      }));
+    }
   };
 
   const handleResolutionDetailChange = (issueId, detailKey, value) => {
-    setResolutions((prev) => ({
-      ...prev,
-      [issueId]: {
-        ...prev[issueId],
-        resolution_details: {
-          ...prev[issueId].resolution_details,
-          [detailKey]: value,
-        },
-      },
-    }));
+    const issue = issues.find((iss) => iss.id === issueId);
+    if (issue && isPayerIssue(issue)) {
+      handlePayerResolutionUpdate(issueId, { resolution_details: { [detailKey]: value } });
+    } else {
+      setResolutions((prev) => ({
+        ...prev,
+        [issueId]: {
+          ...prev[issueId],
+          resolution_details: {
+            ...prev[issueId]?.resolution_details,
+            [detailKey]: value,
+          }
+        }
+      }));
+    }
   };
 
   const handleFixedRowDataChange = (issueId, colName, value) => {
@@ -181,6 +319,43 @@ export default function ImportCSV() {
 
     if (hasCriticalError) {
       setError('Please resolve all critical missing data errors (fill in dates, descriptions, amounts, and payers) before committing.');
+      setSubmitting(false);
+      return;
+    }
+
+    let hasUnresolvedPayer = false;
+    issues.forEach((issue) => {
+      if (isPayerIssue(issue)) {
+        const res = resolutions[issue.id] || {};
+        const isSuggested = issue.issue_type === 'fuzzy_name' && issue.resolution_details?.user_name;
+
+        if (res.resolution_selected === 'map_user') {
+          // If suggested, must be confirmed OR manually updated to a valid selection
+          if (isSuggested) {
+            if (!res.confirmed && (!res.resolution_details?.user_id || res.resolution_details.user_id === issue.resolution_details.user_id)) {
+              hasUnresolvedPayer = true;
+            }
+          } else {
+            if (!res.resolution_details?.user_id) {
+              hasUnresolvedPayer = true;
+            }
+          }
+        } else if (res.resolution_selected === 'add_to_group') {
+          if (!res.resolution_details?.user_id) {
+            hasUnresolvedPayer = true;
+          }
+        } else if (res.resolution_selected === 'create_new_user') {
+          if (!res.resolution_details?.name) {
+            hasUnresolvedPayer = true;
+          }
+        } else if (res.resolution_selected !== 'ignore' && res.resolution_selected !== 'skip') {
+          hasUnresolvedPayer = true;
+        }
+      }
+    });
+
+    if (hasUnresolvedPayer) {
+      setError('Please resolve all payer matches (confirm suggestions, search and add system users, or fill out name details for new users) before committing.');
       setSubmitting(false);
       return;
     }
@@ -524,49 +699,347 @@ export default function ImportCSV() {
                           </div>
                         )}
 
-                        {/* 3. FUZZY SPELLED NAME MAPPING */}
-                        {issue.issue_type === 'fuzzy_name' && (
-                          <div className="flex flex-col md:flex-row md:items-center gap-4">
-                            <span className="text-xs font-semibold text-slate-600">Mapping Decision:</span>
-                            <div className="flex flex-wrap gap-3">
-                              <label className="flex items-center gap-1.5 text-xs text-slate-700 cursor-pointer">
-                                <input
-                                  type="radio"
-                                  name={`fuzzy-res-${issue.id}`}
-                                  value="map_user"
-                                  checked={res.resolution_selected === 'map_user'}
-                                  onChange={() => handleResolutionChange(issue.id, 'resolution_selected', 'map_user')}
-                                  className="text-brand-600 focus:ring-brand-500"
-                                />
-                                Map to existing member
-                              </label>
-                              <label className="flex items-center gap-1.5 text-xs text-slate-700 cursor-pointer">
-                                <input
-                                  type="radio"
-                                  name={`fuzzy-res-${issue.id}`}
-                                  value="add_to_group"
-                                  checked={res.resolution_selected === 'add_to_group'}
-                                  onChange={() => handleResolutionChange(issue.id, 'resolution_selected', 'add_to_group')}
-                                  className="text-brand-600 focus:ring-brand-500"
-                                />
-                                Add {issue.row_data[paidByHeader]} as new member
-                              </label>
+                        {/* 3. PAYER RESOLUTION ACTIONS */}
+                        {isPayerIssue(issue) && (() => {
+                          const payerName = getPayerNameOfIssue(issue);
+                          const firstPayerIssue = payerName && payerName.trim() !== '' 
+                            ? issues.find((iss) => isPayerIssue(iss) && getPayerNameOfIssue(iss).toLowerCase() === payerName.toLowerCase())
+                            : null;
+                          const isLaterOccurrence = firstPayerIssue && firstPayerIssue.id !== issue.id;
+
+                          if (isLaterOccurrence) {
+                            // Show read-only auto-resolved indicator
+                            const firstRes = resolutions[firstPayerIssue.id] || {};
+                            let resolutionSummary = '';
+                            if (firstRes.resolution_selected === 'map_user') {
+                              const mName = group?.members?.find((m) => m.user.id === firstRes.resolution_details?.user_id)?.user?.name || firstRes.resolution_details?.user_name || 'Rohan';
+                              resolutionSummary = `Mapped to existing member: ${mName}`;
+                            } else if (firstRes.resolution_selected === 'add_to_group') {
+                              resolutionSummary = `Added existing system user to group: ${firstRes.resolution_details?.user_name || 'Sam'}`;
+                            } else if (firstRes.resolution_selected === 'create_new_user') {
+                              resolutionSummary = `Created new user: ${firstRes.resolution_details?.name || 'Priya S'} (${firstRes.resolution_details?.email || 'no email'})`;
+                            } else {
+                              resolutionSummary = 'Skipped / Unresolved';
+                            }
+
+                            return (
+                              <div className="mt-2 bg-emerald-50/50 border border-emerald-100 rounded-xl p-3.5 flex items-center justify-between">
+                                <div className="flex items-center gap-2 text-emerald-800 text-xs font-semibold">
+                                  <span className="text-sm">✓</span>
+                                  <span>Auto-resolved using session mapping ({resolutionSummary})</span>
+                                </div>
+                                <span className="text-[10px] bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded font-mono font-medium">
+                                  Session Sync
+                                </span>
+                              </div>
+                            );
+                          }
+
+                          // If it is the first occurrence (or empty name), render full interactive UI
+                          const suggestedName = issue.resolution_details?.user_name;
+                          const suggestedEmail = issue.resolution_details?.user_email;
+                          const hasSuggestedMatch = issue.issue_type === 'fuzzy_name' && suggestedName;
+
+                          // Let's check if the suggested match is confirmed
+                          const isConfirmed = res.confirmed === true;
+
+                          return (
+                            <div className="mt-2 bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-4">
+                              <div className="flex items-center justify-between">
+                                <span className="text-xs font-bold text-slate-700 tracking-wide uppercase">
+                                  How should this payer be resolved?
+                                </span>
+                                {payerName && (
+                                  <span className="text-[10px] bg-slate-200 text-slate-700 px-2 py-0.5 rounded font-medium">
+                                    CSV Name: "{payerName}"
+                                  </span>
+                                )}
+                              </div>
+
+                              {/* Case 1: Suggested Match (Only if present) */}
+                              {hasSuggestedMatch && (
+                                <div className="border border-brand-100 rounded-xl p-3.5 bg-white shadow-sm space-y-2.5">
+                                  <span className="text-[10px] font-bold text-brand-600 bg-brand-50 px-2 py-0.5 rounded border border-brand-100 uppercase tracking-wider">
+                                    Suggested Match
+                                  </span>
+                                  <div className="text-xs text-slate-700 space-y-1">
+                                    <div><strong>Name:</strong> {suggestedName}</div>
+                                    <div><strong>Email:</strong> {suggestedEmail || 'N/A'}</div>
+                                  </div>
+                                  <label className="flex items-center gap-2 text-xs font-semibold text-slate-800 cursor-pointer pt-1">
+                                    <input
+                                      type="checkbox"
+                                      checked={isConfirmed}
+                                      onChange={(e) => {
+                                        const checked = e.target.checked;
+                                        if (checked) {
+                                          handlePayerResolutionUpdate(issue.id, {
+                                            resolution_selected: 'map_user',
+                                            confirmed: true,
+                                            resolution_details: {
+                                              user_id: issue.resolution_details.user_id,
+                                              user_name: suggestedName,
+                                              user_email: suggestedEmail
+                                            }
+                                          });
+                                        } else {
+                                          handlePayerResolutionUpdate(issue.id, {
+                                            resolution_selected: 'ignore',
+                                            confirmed: false
+                                          });
+                                        }
+                                      }}
+                                      className="rounded text-brand-600 focus:ring-brand-500"
+                                    />
+                                    Confirm this is the correct person
+                                  </label>
+                                  {isConfirmed && (
+                                    <p className="text-[10px] text-emerald-600 font-semibold flex items-center gap-1 mt-1 bg-emerald-50 p-2 rounded border border-emerald-100">
+                                      ✓ Map to {suggestedName}. No new records created.
+                                    </p>
+                                  )}
+                                </div>
+                              )}
+
+                              {/* Fallback choices: show if not confirmed */}
+                              {(!hasSuggestedMatch || !isConfirmed) && (
+                                <div className="space-y-3 pt-1 border-t border-slate-100/70">
+                                  <div className="flex flex-col gap-3">
+                                    {/* Option A: Map to existing group member */}
+                                    <div className="flex items-start gap-2.5">
+                                      <input
+                                        type="radio"
+                                        id={`payer-map-act-${issue.id}`}
+                                        name={`payer-res-act-${issue.id}`}
+                                        value="map_user"
+                                        checked={res.resolution_selected === 'map_user'}
+                                        onChange={() => {
+                                          const firstMember = group?.members?.[0]?.user;
+                                          handlePayerResolutionUpdate(issue.id, {
+                                            resolution_selected: 'map_user',
+                                            confirmed: false,
+                                            resolution_details: {
+                                              user_id: res.resolution_details?.user_id || firstMember?.id || '',
+                                              user_name: res.resolution_details?.user_name || firstMember?.name || ''
+                                            }
+                                          });
+                                        }}
+                                        className="text-brand-600 focus:ring-brand-500 mt-0.5"
+                                      />
+                                      <div className="flex-1 min-w-0">
+                                        <label htmlFor={`payer-map-act-${issue.id}`} className="text-xs font-semibold text-slate-700 cursor-pointer block">
+                                          Map to existing group member
+                                        </label>
+                                        {res.resolution_selected === 'map_user' && (
+                                          <div className="mt-2 space-y-2">
+                                            <select
+                                              value={res.resolution_details?.user_id || ''}
+                                              onChange={(e) => {
+                                                const uId = e.target.value;
+                                                const uName = group?.members?.find((m) => m.user.id === uId)?.user?.name || '';
+                                                handlePayerResolutionUpdate(issue.id, {
+                                                  resolution_details: {
+                                                    user_id: uId,
+                                                    user_name: uName
+                                                  }
+                                                });
+                                              }}
+                                              className="border border-slate-200 rounded px-2.5 py-1 text-xs bg-white focus:ring-brand-500 block max-w-xs w-full"
+                                            >
+                                              <option value="">-- Select Member --</option>
+                                              {group.members?.map((m) => (
+                                                <option key={m.user.id} value={m.user.id}>{m.user.name}</option>
+                                              ))}
+                                            </select>
+                                            {res.resolution_details?.user_id && (
+                                              <p className="text-[10px] text-emerald-600 font-semibold bg-emerald-50 p-2 rounded border border-emerald-100">
+                                                ✓ Map to {res.resolution_details.user_name || 'selected member'}. No new records created.
+                                              </p>
+                                            )}
+                                          </div>
+                                        )}
+                                      </div>
+                                    </div>
+
+                                    {/* Option B: Search system user by email and add to group */}
+                                    <div className="flex items-start gap-2.5">
+                                      <input
+                                        type="radio"
+                                        id={`payer-add-sys-act-${issue.id}`}
+                                        name={`payer-res-act-${issue.id}`}
+                                        value="add_to_group"
+                                        checked={res.resolution_selected === 'add_to_group'}
+                                        onChange={() => {
+                                          handlePayerResolutionUpdate(issue.id, {
+                                            resolution_selected: 'add_to_group',
+                                            confirmed: false
+                                          });
+                                        }}
+                                        className="text-brand-600 focus:ring-brand-500 mt-0.5"
+                                      />
+                                      <div className="flex-1 min-w-0">
+                                        <label htmlFor={`payer-add-sys-act-${issue.id}`} className="text-xs font-semibold text-slate-700 cursor-pointer block">
+                                          Add existing system user to group
+                                        </label>
+                                        {res.resolution_selected === 'add_to_group' && (() => {
+                                          const searchState = searchStates[issue.id] || { query: '', loading: false, result: null, error: '' };
+                                          return (
+                                            <div className="mt-2 space-y-2 border border-slate-200 rounded-lg p-3 bg-white max-w-md">
+                                              <span className="text-[10px] font-bold text-slate-400 block uppercase">
+                                                Search system user by email
+                                              </span>
+                                              <div className="flex gap-2">
+                                                <input
+                                                  type="email"
+                                                  value={searchState.query}
+                                                  onChange={(e) => {
+                                                    const val = e.target.value;
+                                                    setSearchStates((prev) => ({
+                                                      ...prev,
+                                                      [issue.id]: { ...prev[issue.id], query: val }
+                                                    }));
+                                                  }}
+                                                  className="flex-1 border border-slate-200 rounded px-2 py-1 text-xs focus:ring-brand-500"
+                                                  placeholder="user@gmail.com"
+                                                />
+                                                <button
+                                                  type="button"
+                                                  onClick={() => handleSearchUser(issue.id, searchState.query)}
+                                                  disabled={searchState.loading}
+                                                  className="btn-primary py-1 px-3 text-xs bg-slate-700 hover:bg-slate-800"
+                                                >
+                                                  {searchState.loading ? 'Searching...' : 'Search'}
+                                                </button>
+                                              </div>
+
+                                              {searchState.error && (
+                                                <p className="text-[10px] text-rose-500 font-semibold">{searchState.error}</p>
+                                              )}
+
+                                              {/* Found User Display */}
+                                              {searchState.result && (
+                                                <div className="p-2 bg-slate-50 border border-slate-100 rounded-md text-xs space-y-1.5">
+                                                  <div><strong>Name:</strong> {searchState.result.name}</div>
+                                                  <div><strong>Email:</strong> {searchState.result.email}</div>
+                                                  <button
+                                                    type="button"
+                                                    onClick={() => {
+                                                      handlePayerResolutionUpdate(issue.id, {
+                                                        resolution_details: {
+                                                          user_id: searchState.result.id,
+                                                          user_name: searchState.result.name,
+                                                          user_email: searchState.result.email
+                                                        }
+                                                      });
+                                                    }}
+                                                    className={`w-full py-1 text-[10px] font-bold rounded transition-colors ${
+                                                      res.resolution_details?.user_id === searchState.result.id
+                                                        ? 'bg-emerald-100 text-emerald-800'
+                                                        : 'bg-brand-50 text-brand-700 hover:bg-brand-100'
+                                                    }`}
+                                                  >
+                                                    {res.resolution_details?.user_id === searchState.result.id
+                                                      ? '✓ Added to group payload'
+                                                      : 'Add to group'}
+                                                  </button>
+                                                </div>
+                                              )}
+
+                                              {/* Show final action summary */}
+                                              {res.resolution_details?.user_id && (
+                                                <div className="text-[10px] text-emerald-600 bg-emerald-50 p-2 rounded border border-emerald-100 space-y-0.5">
+                                                  <div className="font-bold">✓ Selected user details:</div>
+                                                  <div><strong>Name:</strong> {res.resolution_details.user_name}</div>
+                                                  <div><strong>Email:</strong> {res.resolution_details.user_email}</div>
+                                                  <div className="text-[9px] text-slate-500 mt-1 font-mono">• Action: Create GroupMembership only.</div>
+                                                </div>
+                                              )}
+                                            </div>
+                                          );
+                                        })()}
+                                      </div>
+                                    </div>
+
+                                    {/* Option C: Create new member and add to group */}
+                                    <div className="flex items-start gap-2.5">
+                                      <input
+                                        type="radio"
+                                        id={`payer-create-act-${issue.id}`}
+                                        name={`payer-res-act-${issue.id}`}
+                                        value="create_new_user"
+                                        checked={res.resolution_selected === 'create_new_user'}
+                                        onChange={() => {
+                                          handlePayerResolutionUpdate(issue.id, {
+                                            resolution_selected: 'create_new_user',
+                                            confirmed: false,
+                                            resolution_details: {
+                                              name: res.resolution_details?.name || payerName || '',
+                                              email: res.resolution_details?.email || ''
+                                            }
+                                          });
+                                        }}
+                                        className="text-brand-600 focus:ring-brand-500 mt-0.5"
+                                      />
+                                      <div className="flex-1 min-w-0">
+                                        <label htmlFor={`payer-create-act-${issue.id}`} className="text-xs font-semibold text-slate-700 cursor-pointer block">
+                                          Create new member and add to group
+                                        </label>
+                                        {res.resolution_selected === 'create_new_user' && (
+                                          <div className="mt-2 space-y-3 border border-slate-200 rounded-lg p-3 bg-white max-w-md">
+                                            <span className="text-[10px] font-bold text-slate-400 block uppercase">
+                                              Create New User details
+                                            </span>
+                                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                              <div>
+                                                <label className="text-[10px] font-semibold text-slate-500 block mb-0.5">Full Name</label>
+                                                <input
+                                                  type="text"
+                                                  value={res.resolution_details?.name || ''}
+                                                  onChange={(e) => {
+                                                    handlePayerResolutionUpdate(issue.id, {
+                                                      resolution_details: {
+                                                        name: e.target.value
+                                                      }
+                                                    });
+                                                  }}
+                                                  className="w-full border border-slate-200 rounded px-2 py-1 text-xs focus:ring-1 focus:ring-brand-500 bg-white"
+                                                  placeholder="Full Name"
+                                                />
+                                              </div>
+                                              <div>
+                                                <label className="text-[10px] font-semibold text-slate-500 block mb-0.5">Email (Optional)</label>
+                                                <input
+                                                  type="email"
+                                                  value={res.resolution_details?.email || ''}
+                                                  onChange={(e) => {
+                                                    handlePayerResolutionUpdate(issue.id, {
+                                                      resolution_details: {
+                                                        email: e.target.value
+                                                      }
+                                                    });
+                                                  }}
+                                                  className="w-full border border-slate-200 rounded px-2 py-1 text-xs focus:ring-1 focus:ring-brand-500 bg-white"
+                                                  placeholder="email@example.com"
+                                                />
+                                              </div>
+                                            </div>
+                                            {res.resolution_details?.name && (
+                                              <div className="text-[10px] text-emerald-600 bg-emerald-50 p-2 rounded border border-emerald-100 space-y-0.5">
+                                                <div className="font-bold">✓ Creation details:</div>
+                                                <div><strong>User:</strong> {res.resolution_details.name} ({res.resolution_details.email || 'auto-generated mock email'})</div>
+                                                <div className="text-[9px] text-slate-500 mt-1 font-mono">• Action: Create User & GroupMembership.</div>
+                                              </div>
+                                            )}
+                                          </div>
+                                        )}
+                                      </div>
+                                    </div>
+                                  </div>
+                                </div>
+                              )}
                             </div>
-                            
-                            {res.resolution_selected === 'map_user' && (
-                              <select
-                                value={res.resolution_details?.user_id || ''}
-                                onChange={(e) => handleResolutionDetailChange(issue.id, 'user_id', e.target.value)}
-                                className="border border-slate-200 rounded px-2 py-1 text-xs bg-white focus:ring-brand-500"
-                              >
-                                <option value="">-- Select Member --</option>
-                                {group.members?.map((m) => (
-                                  <option key={m.user.id} value={m.user.id}>{m.user.name}</option>
-                                ))}
-                              </select>
-                            )}
-                          </div>
-                        )}
+                          );
+                        })()}
 
                         {/* 4. NEGATIVE AMOUNT ACTIONS */}
                         {issue.issue_type === 'negative_amount' && (
@@ -621,7 +1094,7 @@ export default function ImportCSV() {
                             <p className="text-[11px] font-bold text-rose-700 uppercase tracking-wide">
                               ⚠️ Provide values to fix this row before import
                             </p>
-                            <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+                            <div className={`grid grid-cols-1 ${isPayerIssue(issue) ? 'md:grid-cols-3' : 'md:grid-cols-4'} gap-3`}>
                               <div>
                                 <label className="text-[10px] font-semibold text-slate-500 block mb-0.5">Date</label>
                                 <input
@@ -649,23 +1122,28 @@ export default function ImportCSV() {
                                   className="w-full border border-rose-200 rounded px-2 py-1 text-xs focus:ring-1 focus:ring-rose-500 bg-white font-mono"
                                 />
                               </div>
-                              <div>
-                                <label className="text-[10px] font-semibold text-slate-500 block mb-0.5">Payer</label>
-                                <select
-                                  value={res.row_data_fixed?.[paidByHeader] || ''}
-                                  onChange={(e) => handleFixedRowDataChange(issue.id, paidByHeader, e.target.value)}
-                                  className="w-full border border-rose-200 rounded px-2 py-1 text-xs focus:ring-1 focus:ring-rose-500 bg-white"
-                                >
-                                  <option value="">-- Select Member --</option>
-                                  {group.members?.map((m) => (
-                                    <option key={m.user.id} value={m.user.name}>{m.user.name}</option>
-                                  ))}
-                                  {/* Also let them use the CSV raw string if preferred */}
-                                  {issue.row_data[paidByHeader] && (
-                                    <option value={issue.row_data[paidByHeader]}>{issue.row_data[paidByHeader]} (Raw CSV value)</option>
-                                  )}
-                                </select>
-                              </div>
+                              {!isPayerIssue(issue) && (
+                                <div>
+                                  <label className="text-[10px] font-semibold text-slate-500 block mb-0.5">Payer</label>
+                                  <select
+                                    value={res.row_data_fixed?.[paidByHeader] || ''}
+                                    onChange={(e) => handleFixedRowDataChange(issue.id, paidByHeader, e.target.value)}
+                                    className="w-full border border-rose-200 rounded px-2 py-1 text-xs focus:ring-1 focus:ring-rose-500 bg-white"
+                                  >
+                                    <option value="">-- Select Payer --</option>
+                                    {Array.from(new Set([
+                                      ...(group.members || []).map((m) => m.user.name),
+                                      ...Object.keys(timelineDates)
+                                    ])).map((name) => (
+                                      <option key={name} value={name}>{name}</option>
+                                    ))}
+                                    {/* Also let them use the CSV raw string if preferred */}
+                                    {issue.row_data[paidByHeader] && (
+                                      <option value={issue.row_data[paidByHeader]}>{issue.row_data[paidByHeader]} (Raw CSV value)</option>
+                                    )}
+                                  </select>
+                                </div>
+                              )}
                             </div>
                           </div>
                         )}

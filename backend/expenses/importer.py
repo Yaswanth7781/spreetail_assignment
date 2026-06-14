@@ -232,7 +232,12 @@ class CSVExpenseImporter:
                             'severity': 'warning',
                             'description': f"Spelling mismatch: matched payer '{paid_by_raw}' to member '{user.name}'",
                             'resolution_selected': 'map_user',
-                            'resolution_details': {'csv_name': paid_by_raw, 'user_id': str(user.id)}
+                            'resolution_details': {
+                                'csv_name': paid_by_raw,
+                                'user_id': str(user.id),
+                                'user_name': user.name,
+                                'user_email': user.email
+                            }
                         })
                 else:
                     # User not found in group, check if registered in global users
@@ -243,7 +248,12 @@ class CSVExpenseImporter:
                             'severity': 'warning',
                             'description': f"Payer '{paid_by_raw}' exists in system but is not in group members. Suggest adding them.",
                             'resolution_selected': 'add_to_group',
-                            'resolution_details': {'csv_name': paid_by_raw, 'user_id': str(global_user.id)}
+                            'resolution_details': {
+                                'csv_name': paid_by_raw,
+                                'user_id': str(global_user.id),
+                                'user_name': global_user.name,
+                                'user_email': global_user.email
+                            }
                         })
                     else:
                         issues.append({
@@ -501,21 +511,71 @@ class CSVExpenseImporter:
             else:
                 # Fuzzy resolved match lookup
                 for issue in row_issues:
-                    if issue.issue_type == 'fuzzy_name' and issue.resolution_selected == 'map_user' and issue.resolution_details:
-                        mapped_uid = issue.resolution_details.get('user_id')
+                    res_choice = issue.resolution_selected
+                    res_details = issue.resolution_details or {}
+                    
+                    # Apply overrides from request resolutions if available
+                    iss_id_str = str(issue.id)
+                    if iss_id_str in approved_issues_resolutions:
+                        user_res = approved_issues_resolutions[iss_id_str]
+                        res_choice = user_res.get('resolution_selected', res_choice)
+                        res_details = user_res.get('resolution_details', res_details)
+                    
+                    if res_choice == 'map_user' and res_details:
+                        mapped_uid = res_details.get('user_id')
                         if mapped_uid:
-                            payer_user = User.objects.filter(pk=mapped_uid).first()
+                            payer_user = group_users.get(mapped_uid)
+                            if not payer_user:
+                                payer_user = User.objects.filter(pk=mapped_uid).first()
+                                if payer_user:
+                                    group_users[mapped_uid] = payer_user
                             break
-                    elif issue.issue_type == 'fuzzy_name' and issue.resolution_selected == 'add_to_group' and issue.resolution_details:
-                        mapped_uid = issue.resolution_details.get('user_id')
+                    elif res_choice == 'add_to_group' and res_details:
+                        mapped_uid = res_details.get('user_id')
                         if mapped_uid:
-                            target_u = User.objects.filter(pk=mapped_uid).first()
+                            target_u = group_users.get(mapped_uid)
+                            if not target_u:
+                                target_u = User.objects.filter(pk=mapped_uid).first()
+                                if target_u:
+                                    group_users[mapped_uid] = target_u
                             if target_u:
-                                gm = GroupMember.objects.create(group=group, user=target_u)
-                                MembershipHistory.objects.create(member=gm, joined_date=parsed_date)
+                                gm, created = GroupMember.objects.get_or_create(group=group, user=target_u)
+                                if created:
+                                    MembershipHistory.objects.create(member=gm, joined_date=parsed_date)
+                                    member_timelines[target_u.id] = [(parsed_date, None)]
                                 group_members[target_u.name.lower()] = target_u
                                 payer_user = target_u
                                 break
+                    elif res_choice == 'create_new_user' and res_details:
+                        new_name = res_details.get('name')
+                        new_email = res_details.get('email')
+                        if new_name:
+                            # Re-use existing member created/added earlier in this run to avoid duplicate entries
+                            if new_name.lower() in group_members:
+                                target_u = group_members[new_name.lower()]
+                            else:
+                                import random
+                                if not new_email:
+                                    new_email = f"{new_name.lower().replace(' ', '_')}_{random.randint(1000, 9999)}@example.com"
+                                
+                                target_u = User.objects.filter(email=new_email).first()
+                                if not target_u:
+                                    target_u = User.objects.create_user(
+                                        email=new_email,
+                                        name=new_name,
+                                        password=User.objects.make_random_password()
+                                    )
+                                
+                                gm, created = GroupMember.objects.get_or_create(group=group, user=target_u)
+                                if created:
+                                    MembershipHistory.objects.create(member=gm, joined_date=parsed_date)
+                                    member_timelines[target_u.id] = [(parsed_date, None)]
+                                    group_users[str(target_u.id)] = target_u
+                                
+                                group_members[target_u.name.lower()] = target_u
+                            
+                            payer_user = target_u
+                            break
 
             # If still not found, check if a global user matches, otherwise skip
             if not payer_user:
