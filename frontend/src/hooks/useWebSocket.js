@@ -8,25 +8,42 @@ export function useWebSocket(expenseId) {
   const connect = useCallback(() => {
     if (!expenseId) return;
     const token = localStorage.getItem('access_token');
-    const wsBase = import.meta.env.VITE_WS_BASE_URL || 'ws://localhost:8000';
+    let wsBase = import.meta.env.VITE_WS_BASE_URL || 'ws://localhost:8000';
+
+    // Auto-correct http/https to ws/wss in case of configuration typos
+    if (wsBase.startsWith('https://')) {
+      wsBase = wsBase.replace('https://', 'wss://');
+    } else if (wsBase.startsWith('http://')) {
+      wsBase = wsBase.replace('http://', 'ws://');
+    }
+
     const url = `${wsBase}/ws/expense/${expenseId}/?token=${token}`;
 
-    const ws = new WebSocket(url);
-    wsRef.current = ws;
+    try {
+      const ws = new WebSocket(url);
+      wsRef.current = ws;
 
-    ws.onopen = () => setConnected(true);
-    ws.onclose = () => {
+      ws.onopen = () => setConnected(true);
+      ws.onclose = () => {
+        setConnected(false);
+        // Reconnect after 3s
+        setTimeout(connect, 3000);
+      };
+      ws.onerror = () => {
+        if (wsRef.current) wsRef.current.close();
+      };
+      ws.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          setMessages((prev) => [...prev, msg]);
+        } catch {}
+      };
+    } catch (err) {
+      console.error('WebSocket connection failed to initialize:', err);
       setConnected(false);
-      // Reconnect after 3s
+      // Try reconnecting after 3s
       setTimeout(connect, 3000);
-    };
-    ws.onerror = () => ws.close();
-    ws.onmessage = (event) => {
-      try {
-        const msg = JSON.parse(event.data);
-        setMessages((prev) => [...prev, msg]);
-      } catch {}
-    };
+    }
   }, [expenseId]);
 
   useEffect(() => {
