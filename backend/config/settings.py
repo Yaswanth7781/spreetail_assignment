@@ -65,7 +65,7 @@ ASGI_APPLICATION = 'config.asgi.application'
 
 DATABASE_URL = os.environ.get(
     'DATABASE_URL',
-    'postgresql://neondb_owner:npg_CDB4vVEQ5Uhd@ep-lively-union-adgs3ubm.c-2.us-east-1.aws.neon.tech/neondb?sslmode=require'
+    'postgresql://neondb_owner:npg_CDB4vVEQ5Uhd@ep-lively-union-adgs3ubm-pooler.c-2.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require'
 )
 DATABASES = {
     'default': dj_database_url.parse(DATABASE_URL, conn_max_age=600)

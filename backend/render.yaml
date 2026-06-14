@@ -14,4 +14,4 @@ services:
       - key: CORS_ALLOWED_ORIGINS
         value: https://splitease.vercel.app
       - key: DATABASE_URL
-        value: postgresql://neondb_owner:npg_CDB4vVEQ5Uhd@ep-lively-union-adgs3ubm.c-2.us-east-1.aws.neon.tech/neondb?sslmode=require
+        value: postgresql://neondb_owner:npg_CDB4vVEQ5Uhd@ep-lively-union-adgs3ubm-pooler.c-2.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require
