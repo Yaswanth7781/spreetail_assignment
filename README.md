@@ -8,7 +8,7 @@ A full-stack expense-splitting app built with Django REST Framework + React (Vit
 
 ## Live Demo
 
-- **Frontend:** https://splitease.vercel.app  
+- **Frontend:** https://splitease.netlify.app
 - **Backend API:** https://splitease-backend.onrender.com/api/v1/
 
 ---
@@ -34,7 +34,7 @@ A full-stack expense-splitting app built with Django REST Framework + React (Vit
 | Database | PostgreSQL (Neon) |
 | Auth | JWT (djangorestframework-simplejwt) |
 | Real-time | Django Channels + WebSockets |
-| Frontend host | Vercel |
+| Frontend host | Netlify |
 | Backend host | Render (ASGI via Daphne) |
 
 ---
@@ -100,16 +100,16 @@ The frontend will run at `http://localhost:5173`
    - `DEBUG=False`
    - `DATABASE_URL` (your Neon connection string)
    - `ALLOWED_HOSTS` (your Render domain)
-   - `CORS_ALLOWED_ORIGINS` (your Vercel frontend URL)
+   - `CORS_ALLOWED_ORIGINS` (your Netlify frontend URL)
 
-### Frontend → Vercel
+### Frontend → Netlify
 
-1. Import your GitHub repo on Vercel
+1. Import your GitHub repo on Netlify
 2. Set root directory to `frontend/`
 3. Set environment variables:
    - `VITE_API_BASE_URL=https://your-render-app.onrender.com/api/v1`
    - `VITE_WS_BASE_URL=wss://your-render-app.onrender.com`
-4. Deploy — Vercel auto-detects Vite
+4. Deploy — Netlify auto-detects the Vite build and uses `frontend/netlify.toml`
 
 ---
 

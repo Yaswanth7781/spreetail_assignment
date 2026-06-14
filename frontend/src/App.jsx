@@ -9,6 +9,7 @@ import GroupDetail from './pages/GroupDetail';
 import CreateExpense from './pages/CreateExpense';
 import ExpenseDetail from './pages/ExpenseDetail';
 import Settle from './pages/Settle';
+import ImportCSV from './pages/ImportCSV';
 
 function ProtectedRoute({ children }) {
   const { user, loading } = useAuth();
@@ -49,6 +50,7 @@ function AppRoutes() {
       <Route path="/groups/:id/expenses/new" element={<ProtectedRoute><Layout><CreateExpense /></Layout></ProtectedRoute>} />
       <Route path="/groups/:id/expenses/:eid" element={<ProtectedRoute><Layout><ExpenseDetail /></Layout></ProtectedRoute>} />
       <Route path="/groups/:id/settle" element={<ProtectedRoute><Layout><Settle /></Layout></ProtectedRoute>} />
+      <Route path="/groups/:id/import" element={<ProtectedRoute><Layout><ImportCSV /></Layout></ProtectedRoute>} />
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
     </Routes>
   );

@@ -149,3 +149,77 @@ def compute_user_summary(user):
                 'net_amount': val['net'],
             })
     return result
+
+
+def compute_simplified_balances(group):
+    """
+    Greedy debt simplification.
+    1. Compute direct net balance for each user in the group.
+    2. Split into debtors and creditors.
+    3. Greedily match debtor with creditor to settle.
+    Returns: list of {from_user, to_user, amount}
+    """
+    from decimal import Decimal
+    from users.models import User
+
+    direct_balances = compute_net_balances(group)
+
+    # Compute net balance for each user in the group
+    # net_user[user_id] = net amount user is owed (positive) or owes (negative)
+    net_user = {}
+    members_qs = group.memberships.select_related('user')
+    member_map = {str(m.user.id): m.user for m in members_qs}
+
+    for uid in member_map:
+        net_user[uid] = Decimal('0')
+
+    for b in direct_balances:
+        from_id = str(b['from_user'].id)
+        to_id = str(b['to_user'].id)
+        amount = b['amount']
+
+        net_user[from_id] -= amount
+        net_user[to_id] += amount
+
+    # Split into creditors and debtors
+    creditors = []  # List of [user_id, balance]
+    debtors = []    # List of [user_id, balance]
+
+    for uid, bal in net_user.items():
+        if bal > Decimal('0.01'):
+            creditors.append([uid, bal])
+        elif bal < Decimal('-0.01'):
+            debtors.append([uid, abs(bal)])
+
+    # Sort descending by amount
+    creditors.sort(key=lambda x: x[1], reverse=True)
+    debtors.sort(key=lambda x: x[1], reverse=True)
+
+    simplified = []
+
+    c_idx = 0
+    d_idx = 0
+
+    while c_idx < len(creditors) and d_idx < len(debtors):
+        c_item = creditors[c_idx]
+        d_item = debtors[d_idx]
+
+        settle_amt = min(c_item[1], d_item[1])
+
+        if settle_amt > Decimal('0.01'):
+            simplified.append({
+                'from_user': member_map[d_item[0]],
+                'to_user': member_map[c_item[0]],
+                'amount': settle_amt.quantize(Decimal('0.01')),
+            })
+
+        c_item[1] -= settle_amt
+        d_item[1] -= settle_amt
+
+        if c_item[1] <= Decimal('0.01'):
+            c_idx += 1
+        if d_item[1] <= Decimal('0.01'):
+            d_idx += 1
+
+    return simplified
+
