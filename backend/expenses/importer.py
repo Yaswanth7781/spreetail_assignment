@@ -397,9 +397,16 @@ class CSVExpenseImporter:
         for issue in issues:
             issues_by_row.setdefault(issue.row_number, []).append(issue)
 
-        # Build group member lookup dict
-        members_qs = group.memberships.select_related('user')
+        # Build group member lookup dict and cache timelines
+        members_qs = group.memberships.prefetch_related('history').select_related('user')
         group_members = {m.user.name.lower(): m.user for m in members_qs}
+        group_users = {str(m.user.id): m.user for m in members_qs}
+        
+        member_timelines = {}
+        for m in members_qs:
+            member_timelines[m.user.id] = [
+                (h.joined_date, h.left_date) for h in m.history.all()
+            ]
         
         # Sort rows to process in order
         row_numbers = sorted(list({issue.row_number for issue in issues}))
@@ -584,19 +591,15 @@ class CSVExpenseImporter:
             # A split user is only included if they were active in the group on parsed_date
             active_users = []
             for u in group_members.values():
-                # Check if u is active on parsed_date
-                gm = GroupMember.objects.filter(group=group, user=u).first()
-                if gm:
-                    active_intervals = gm.history.filter(
-                        joined_date__lte=parsed_date
-                    )
-                    is_active = False
-                    for interval in active_intervals:
-                        if interval.left_date is None or interval.left_date >= parsed_date:
+                intervals = member_timelines.get(u.id, [])
+                is_active = False
+                for joined_date, left_date in intervals:
+                    if joined_date <= parsed_date:
+                        if left_date is None or left_date >= parsed_date:
                             is_active = True
                             break
-                    if is_active:
-                        active_users.append(u)
+                if is_active:
+                    active_users.append(u)
 
             # If equal split and no specific roommate values in CSV, include all active users
             if not roommate_splits and split_type == 'equal':
@@ -640,7 +643,11 @@ class CSVExpenseImporter:
 
             # Create split rows
             for split in computed_splits:
-                user = User.objects.get(pk=split['user_id'])
+                uid = split['user_id']
+                user = group_users.get(uid)
+                if not user:
+                    user = User.objects.get(pk=uid)
+                    group_users[uid] = user
                 ExpenseSplit.objects.create(
                     expense=expense,
                     user=user,
