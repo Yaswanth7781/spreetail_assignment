@@ -1089,64 +1089,232 @@ export default function ImportCSV() {
                         )}
 
                         {/* 6. CRITICAL MISSING DATA INLINE CORRECTION */}
-                        {issue.severity === 'critical' && (
-                          <div className="bg-rose-50/50 p-4 border border-rose-100 rounded-lg space-y-3">
-                            <p className="text-[11px] font-bold text-rose-700 uppercase tracking-wide">
-                              ⚠️ Provide values to fix this row before import
-                            </p>
-                            <div className={`grid grid-cols-1 ${isPayerIssue(issue) ? 'md:grid-cols-3' : 'md:grid-cols-4'} gap-3`}>
-                              <div>
-                                <label className="text-[10px] font-semibold text-slate-500 block mb-0.5">Date</label>
-                                <input
-                                  type="date"
-                                  value={res.row_data_fixed?.[dateHeader] || ''}
-                                  onChange={(e) => handleFixedRowDataChange(issue.id, dateHeader, e.target.value)}
-                                  className="w-full border border-rose-200 rounded px-2 py-1 text-xs focus:ring-1 focus:ring-rose-500 bg-white font-mono"
-                                />
-                              </div>
-                              <div>
-                                <label className="text-[10px] font-semibold text-slate-500 block mb-0.5">Description</label>
-                                <input
-                                  type="text"
-                                  value={res.row_data_fixed?.[descHeader] || ''}
-                                  onChange={(e) => handleFixedRowDataChange(issue.id, descHeader, e.target.value)}
-                                  className="w-full border border-rose-200 rounded px-2 py-1 text-xs focus:ring-1 focus:ring-rose-500 bg-white"
-                                />
-                              </div>
-                              <div>
-                                <label className="text-[10px] font-semibold text-slate-500 block mb-0.5">Amount</label>
-                                <input
-                                  type="text"
-                                  value={res.row_data_fixed?.[amountHeader] || ''}
-                                  onChange={(e) => handleFixedRowDataChange(issue.id, amountHeader, e.target.value)}
-                                  className="w-full border border-rose-200 rounded px-2 py-1 text-xs focus:ring-1 focus:ring-rose-500 bg-white font-mono"
-                                />
-                              </div>
-                              {!isPayerIssue(issue) && (
+                        {issue.severity === 'critical' && (() => {
+                          const payerName = getPayerNameOfIssue(issue);
+                          return (
+                            <div className="bg-rose-50/50 p-4 border border-rose-100 rounded-lg space-y-3">
+                              <p className="text-[11px] font-bold text-rose-700 uppercase tracking-wide">
+                                ⚠️ Provide values to fix this row before import
+                              </p>
+                              <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+                                <div>
+                                  <label className="text-[10px] font-semibold text-slate-500 block mb-0.5">Date</label>
+                                  <input
+                                    type="date"
+                                    value={res.row_data_fixed?.[dateHeader] || ''}
+                                    onChange={(e) => handleFixedRowDataChange(issue.id, dateHeader, e.target.value)}
+                                    className="w-full border border-rose-200 rounded px-2 py-1 text-xs focus:ring-1 focus:ring-rose-500 bg-white font-mono"
+                                  />
+                                </div>
+                                <div>
+                                  <label className="text-[10px] font-semibold text-slate-500 block mb-0.5">Description</label>
+                                  <input
+                                    type="text"
+                                    value={res.row_data_fixed?.[descHeader] || ''}
+                                    onChange={(e) => handleFixedRowDataChange(issue.id, descHeader, e.target.value)}
+                                    className="w-full border border-rose-200 rounded px-2 py-1 text-xs focus:ring-1 focus:ring-rose-500 bg-white"
+                                  />
+                                </div>
+                                <div>
+                                  <label className="text-[10px] font-semibold text-slate-500 block mb-0.5">Amount</label>
+                                  <input
+                                    type="text"
+                                    value={res.row_data_fixed?.[amountHeader] || ''}
+                                    onChange={(e) => handleFixedRowDataChange(issue.id, amountHeader, e.target.value)}
+                                    className="w-full border border-rose-200 rounded px-2 py-1 text-xs focus:ring-1 focus:ring-rose-500 bg-white font-mono"
+                                  />
+                                </div>
                                 <div>
                                   <label className="text-[10px] font-semibold text-slate-500 block mb-0.5">Payer</label>
                                   <select
-                                    value={res.row_data_fixed?.[paidByHeader] || ''}
-                                    onChange={(e) => handleFixedRowDataChange(issue.id, paidByHeader, e.target.value)}
+                                    value={
+                                      res.resolution_selected === 'map_user' 
+                                        ? (group.members?.find(m => m.user.id === res.resolution_details?.user_id)?.user?.name || res.row_data_fixed?.[paidByHeader] || '')
+                                        : res.resolution_selected === 'add_to_group'
+                                          ? 'SPECIAL_ADD_SYSTEM_USER'
+                                          : res.resolution_selected === 'create_new_user'
+                                            ? 'SPECIAL_CREATE_NEW_USER'
+                                            : (res.row_data_fixed?.[paidByHeader] || '')
+                                    }
+                                    onChange={(e) => {
+                                      const val = e.target.value;
+                                      if (val === 'SPECIAL_ADD_SYSTEM_USER') {
+                                        handlePayerResolutionUpdate(issue.id, {
+                                          resolution_selected: 'add_to_group',
+                                          confirmed: false
+                                        });
+                                      } else if (val === 'SPECIAL_CREATE_NEW_USER') {
+                                        handlePayerResolutionUpdate(issue.id, {
+                                          resolution_selected: 'create_new_user',
+                                          confirmed: false,
+                                          resolution_details: {
+                                            name: payerName || '',
+                                            email: ''
+                                          }
+                                        });
+                                      } else {
+                                        const matchedMember = group.members?.find((m) => m.user.name === val);
+                                        if (matchedMember) {
+                                          handlePayerResolutionUpdate(issue.id, {
+                                            resolution_selected: 'map_user',
+                                            confirmed: true,
+                                            resolution_details: {
+                                              user_id: matchedMember.user.id,
+                                              user_name: matchedMember.user.name,
+                                              user_email: matchedMember.user.email
+                                            }
+                                          });
+                                        } else {
+                                          handlePayerResolutionUpdate(issue.id, {
+                                            resolution_selected: 'ignore',
+                                            confirmed: false
+                                          });
+                                          handleFixedRowDataChange(issue.id, paidByHeader, val);
+                                        }
+                                      }
+                                    }}
                                     className="w-full border border-rose-200 rounded px-2 py-1 text-xs focus:ring-1 focus:ring-rose-500 bg-white"
                                   >
                                     <option value="">-- Select Payer --</option>
-                                    {Array.from(new Set([
-                                      ...(group.members || []).map((m) => m.user.name),
-                                      ...Object.keys(timelineDates)
-                                    ])).map((name) => (
-                                      <option key={name} value={name}>{name}</option>
+                                    {group.members?.map((m) => (
+                                      <option key={m.user.id} value={m.user.name}>{m.user.name}</option>
                                     ))}
-                                    {/* Also let them use the CSV raw string if preferred */}
-                                    {issue.row_data[paidByHeader] && (
+                                    <option value="SPECIAL_ADD_SYSTEM_USER">+ Add existing system user...</option>
+                                    <option value="SPECIAL_CREATE_NEW_USER">+ Create new member...</option>
+                                    {issue.row_data[paidByHeader] && !group.members?.some((m) => m.user.name === issue.row_data[paidByHeader]) && (
                                       <option value={issue.row_data[paidByHeader]}>{issue.row_data[paidByHeader]} (Raw CSV value)</option>
                                     )}
                                   </select>
                                 </div>
+                              </div>
+
+                              {/* Dynamic resolution fields inside the critical box */}
+                              {res.resolution_selected === 'add_to_group' && (() => {
+                                const searchState = searchStates[issue.id] || { query: '', loading: false, result: null, error: '' };
+                                return (
+                                  <div className="mt-2 space-y-2 border border-slate-200 rounded-lg p-3 bg-white max-w-md">
+                                    <span className="text-[10px] font-bold text-slate-400 block uppercase">
+                                      Search system user by email
+                                    </span>
+                                    <div className="flex gap-2">
+                                      <input
+                                        type="email"
+                                        value={searchState.query}
+                                        onChange={(e) => {
+                                          const val = e.target.value;
+                                          setSearchStates((prev) => ({
+                                            ...prev,
+                                            [issue.id]: { ...prev[issue.id], query: val }
+                                          }));
+                                        }}
+                                        className="flex-1 border border-slate-200 rounded px-2 py-1 text-xs focus:ring-brand-500"
+                                        placeholder="user@gmail.com"
+                                      />
+                                      <button
+                                        type="button"
+                                        onClick={() => handleSearchUser(issue.id, searchState.query)}
+                                        disabled={searchState.loading}
+                                        className="btn-primary py-1 px-3 text-xs bg-slate-700 hover:bg-slate-800"
+                                      >
+                                        {searchState.loading ? 'Searching...' : 'Search'}
+                                      </button>
+                                    </div>
+
+                                    {searchState.error && (
+                                      <p className="text-[10px] text-rose-500 font-semibold">{searchState.error}</p>
+                                    )}
+
+                                    {searchState.result && (
+                                      <div className="p-2 bg-slate-50 border border-slate-100 rounded-md text-xs space-y-1.5">
+                                        <div><strong>Name:</strong> {searchState.result.name}</div>
+                                        <div><strong>Email:</strong> {searchState.result.email}</div>
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            handlePayerResolutionUpdate(issue.id, {
+                                              resolution_details: {
+                                                user_id: searchState.result.id,
+                                                user_name: searchState.result.name,
+                                                user_email: searchState.result.email
+                                              }
+                                            });
+                                          }}
+                                          className={`w-full py-1 text-[10px] font-bold rounded transition-colors ${
+                                            res.resolution_details?.user_id === searchState.result.id
+                                              ? 'bg-emerald-100 text-emerald-800'
+                                              : 'bg-brand-50 text-brand-700 hover:bg-brand-100'
+                                          }`}
+                                        >
+                                          {res.resolution_details?.user_id === searchState.result.id
+                                            ? '✓ Added to group payload'
+                                            : 'Add to group'}
+                                        </button>
+                                      </div>
+                                    )}
+
+                                    {res.resolution_details?.user_id && (
+                                      <div className="text-[10px] text-emerald-600 bg-emerald-50 p-2 rounded border border-emerald-100 space-y-0.5">
+                                        <div className="font-bold">✓ Selected user details:</div>
+                                        <div><strong>Name:</strong> {res.resolution_details.user_name}</div>
+                                        <div><strong>Email:</strong> {res.resolution_details.user_email}</div>
+                                        <div className="text-[9px] text-slate-500 mt-1 font-mono">• Action: Create GroupMembership only.</div>
+                                      </div>
+                                    )}
+                                  </div>
+                                );
+                              })()}
+
+                              {res.resolution_selected === 'create_new_user' && (
+                                <div className="mt-2 space-y-3 border border-slate-200 rounded-lg p-3 bg-white max-w-md">
+                                  <span className="text-[10px] font-bold text-slate-400 block uppercase">
+                                    Create New User details
+                                  </span>
+                                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                    <div>
+                                      <label className="text-[10px] font-semibold text-slate-500 block mb-0.5">Full Name</label>
+                                      <input
+                                        type="text"
+                                        value={res.resolution_details?.name || ''}
+                                        onChange={(e) => {
+                                          handlePayerResolutionUpdate(issue.id, {
+                                            resolution_details: {
+                                              name: e.target.value
+                                            }
+                                          });
+                                        }}
+                                        className="w-full border border-slate-200 rounded px-2 py-1 text-xs focus:ring-1 focus:ring-brand-500 bg-white"
+                                        placeholder="Full Name"
+                                      />
+                                    </div>
+                                    <div>
+                                      <label className="text-[10px] font-semibold text-slate-500 block mb-0.5">Email (Optional)</label>
+                                      <input
+                                        type="email"
+                                        value={res.resolution_details?.email || ''}
+                                        onChange={(e) => {
+                                          handlePayerResolutionUpdate(issue.id, {
+                                            resolution_details: {
+                                              email: e.target.value
+                                            }
+                                          });
+                                        }}
+                                        className="w-full border border-slate-200 rounded px-2 py-1 text-xs focus:ring-1 focus:ring-brand-500 bg-white"
+                                        placeholder="email@example.com"
+                                      />
+                                    </div>
+                                  </div>
+                                  {res.resolution_details?.name && (
+                                    <div className="text-[10px] text-emerald-600 bg-emerald-50 p-2 rounded border border-emerald-100 space-y-0.5">
+                                      <div className="font-bold">✓ Creation details:</div>
+                                      <div><strong>User:</strong> {res.resolution_details.name} ({res.resolution_details.email || 'auto-generated mock email'})</div>
+                                      <div className="text-[9px] text-slate-500 mt-1 font-mono">• Action: Create User & GroupMembership.</div>
+                                    </div>
+                                  )}
+                                </div>
                               )}
                             </div>
-                          </div>
-                        )}
+                          );
+                        })()}
 
                       </div>
                     </div>
