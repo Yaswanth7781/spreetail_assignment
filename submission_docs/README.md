@@ -2,14 +2,14 @@
 
 A full-stack expense-splitting app built with Django REST Framework + React (Vite) + PostgreSQL (Neon).
 
-**AI Tool Used:** Claude (Anthropic) — claude.ai
+
 
 ---
 
 ## Live Demo
 
-- **Frontend:** https://splitease.netlify.app
-- **Backend API:** https://splitease-backend.onrender.com/api/v1/
+- **Frontend:** https://spliteaseforfrnds.netlify.app
+- **Backend API:** https://spreetail-assignment.onrender.com
 
 ---
 
