@@ -14,7 +14,7 @@ Roommates joined and left the flat at different times (Meera left at the end of 
 *   **Option B: Database-backed dynamic intervals (Chosen):** Create a database schema associating active intervals with each membership.
 
 ### Why We Chose What We Chose
-We chose **Option B** because it enables dynamic administrative configuration. Group admins can join/leave roommates via the UI, and the CSV importer automatically queries the database state (`membership_history` table) at any given expense date. This ensures split participant exclusions are verified dynamically without redeploying the app.
+We chose **Option B** because it enables dynamic administrative configuration. Group admins can join/leave roommates via the UI. When importing spreadsheet transactions, the CSV importer parses split participants from the `split_with` column and automatically queries the database state (`membership_history` table) at the given expense date to filter out inactive split participants. This ensures split participant exclusions are verified dynamically without redeploying the app.
 
 ---
 
@@ -28,7 +28,7 @@ Priya requested that USD transactions from travel be accurately converted and au
 *   **Option B: Audit-trail currency storage (Chosen):** Store both the original currency/amount, the exchange rate applied, and the converted final value in INR.
 
 ### Why We Chose What We Chose
-We chose **Option B** to ensure transparency. By storing `original_amount`, `currency`, and `exchange_rate` inside the `expenses` table, the app maintains a complete audit trail. Roommates can inspect exactly how a USD transaction was converted, preventing disputes over exchange rate discrepancies.
+We chose **Option B** to ensure transparency. By storing `original_amount`, `currency`, and `exchange_rate` inside the `expenses` table, the app maintains a complete audit trail. The CSV importer dynamically checks a separate `currency` column (in addition to detecting symbols within the amount value) to apply conversion rates, ensuring all multi-currency entries are correctly tracked.
 
 ---
 
@@ -74,14 +74,14 @@ We chose **Option B** but implemented it as an **interactive toggle**. This resp
 
 ---
 
-## 6. Unresolved Payer Resolution & Session Mapping
+## 6. Unresolved Payer & Split Participant Resolution & Session Mapping
 
 ### Problem
 When importing large spreadsheet transactions, resolving names with minor typos, system matches, or completely new roommates becomes a bottleneck if the user is asked to configure each row individually.
 
 ### Options Considered
 *   **Option A: Row-by-row mapping config (Default):** Prompts the user to configure each anomaly card independently.
-*   **Option B: Three-Action Unified UI with Session Propagation (Chosen):** Shows a clean 3-case card (Suggested Match with confirmation, Email Search with Add to Group, and Create User with optional Email details). Updates all identical payer occurrences automatically and caches them locally.
+*   **Option B: Three-Action Unified UI with Session Propagation (Chosen):** Shows a clean 3-case card (Suggested Match with confirmation, Email Search with Add to Group, and Create User with optional Email details). Updates all identical payer and split participant occurrences automatically and caches them locally.
 
 ### Why We Chose What We Chose
-We chose **Option B** to improve UX efficiency. If "Priya S" appears on 10 different rows, the user configures it once (e.g. creates a new user with name "Priya S" and email "priya@gmail.com") and all other 9 rows automatically resolve to that user. The backend also tracks and merges the newly created user in memory to prevent duplicate user/membership creation.
+We chose **Option B** to improve UX efficiency. The system runs name mapping validation on both the payer (`paid_by`) and each split participant listed under the `split_with` column. If a name (e.g., "Priya S") appears on multiple rows as either a payer or split participant, the user configures it once, and all other occurrences automatically resolve to that user. The backend also tracks and merges the newly created user in memory to prevent duplicate user/membership creation.
