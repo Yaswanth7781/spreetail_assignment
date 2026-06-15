@@ -58,3 +58,8 @@ This document describes how the AI coding assistant (Claude 3.5 Sonnet / Antigra
 *   **What the AI did wrong:** The AI calculated split shares mathematically without correcting for rounding remainders (e.g. splitting ₹100 among 3 people equals ₹33.3333... and storing it resulted in a total sum of ₹99.99, leaving a ₹0.01 mismatch).
 *   **How it was caught:** Database transaction integrity checks failed, preventing the expense from saving because the sum of splits (₹99.99) did not match the total transaction amount (₹100.00).
 *   **What we changed:** Implemented a greedy remainder distribution method in `backend/expenses/split_logic.py` that calculates the total of all split shares, computes the dust remainder (e.g. ₹0.01), and adds it to the final participant's share to guarantee perfect mathematical totals.
+
+### Case 4: Asynchronous React State Batches Overwriting Resolution Details
+*   **What the AI did wrong:** When selecting resolution options in the UI (e.g. confirming a Suggested Match or searching system users), the AI triggered multiple consecutive state updates via asynchronous wrappers (`handleResolutionChange` and `handleResolutionDetailChange`).
+*   **How it was caught:** State updates occasionally overwrote one another due to race conditions during state batching in React. This left fields unpopulated and locked the import validation.
+*   **What we changed:** Combined all payer updates into a single atomic transaction handler, `handlePayerResolutionUpdate(issueId, fields)`. This handler schedules a single state update, ensuring that user details, resolution choices, and corrected row data are always in perfect sync. This also allowed clean session-wide propagation across matching unresolved names.

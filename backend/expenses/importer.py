@@ -92,6 +92,52 @@ def edit_distance(s1, s2):
         distances = distances_
     return distances[-1]
 
+
+def parse_splits_from_row(split_with_raw, split_details_raw, split_type):
+    """
+    Parses split_with and split_details columns.
+    Returns a dict mapping lowercase names to Decimal values.
+    """
+    splits = {}
+    if not split_with_raw:
+        return splits
+        
+    # Standardize separator
+    split_with_raw = split_with_raw.replace(',', ';')
+    
+    # Semicolon-separated list of names
+    names = [n.strip().lower() for n in split_with_raw.split(';') if n.strip()]
+    
+    # Semicolon-separated list of details like 'Aisha 30%; Rohan 30%' or 'Aisha 2; Rohan 1'
+    details = {}
+    if split_details_raw:
+        split_details_raw = split_details_raw.replace(',', ';')
+        parts = [p.strip() for p in split_details_raw.split(';') if p.strip()]
+        for part in parts:
+            part_cleaned = re.sub(r'\s*:\s*', ' ', part)
+            match = re.match(r'^([a-zA-Z\s\']+?)\s*([\d\.\-%]+)$', part_cleaned)
+            if match:
+                name = match.group(1).strip().lower()
+                val_str = match.group(2).strip()
+                cleaned_val = re.sub(r'[^\d\.\-]', '', val_str)
+                try:
+                    details[name] = Decimal(cleaned_val)
+                except InvalidOperation:
+                    pass
+            else:
+                name = part_cleaned.strip().lower()
+                details[name] = Decimal('1')
+
+    # Assign values based on split_type
+    for name in names:
+        if name in details:
+            splits[name] = details[name]
+        else:
+            splits[name] = Decimal('1')
+            
+    return splits
+
+
 class CSVExpenseImporter:
     def __init__(self, group, uploaded_by):
         self.group = group
@@ -137,9 +183,12 @@ class CSVExpenseImporter:
         amount_idx = -1
         paid_by_idx = -1
         split_idx = -1
+        currency_idx = -1
+        split_with_idx = -1
+        split_details_idx = -1
         
         for idx, h in enumerate(headers):
-            h_lower = h.lower()
+            h_lower = h.lower().strip()
             if 'date' in h_lower:
                 date_idx = idx
             elif 'desc' in h_lower or 'title' in h_lower or 'item' in h_lower or h_lower == 'activity':
@@ -148,8 +197,14 @@ class CSVExpenseImporter:
                 amount_idx = idx
             elif 'paid' in h_lower or 'payer' in h_lower:
                 paid_by_idx = idx
-            elif 'split' in h_lower:
+            elif 'split_type' in h_lower or h_lower == 'split':
                 split_idx = idx
+            elif 'split_with' in h_lower or 'split with' in h_lower:
+                split_with_idx = idx
+            elif 'split_details' in h_lower or 'split details' in h_lower or 'split_detail' in h_lower:
+                split_details_idx = idx
+            elif 'currency' in h_lower:
+                currency_idx = idx
 
         # If standard indices not found, make best guess
         if date_idx == -1 and len(headers) > 0: date_idx = 0
@@ -173,6 +228,9 @@ class CSVExpenseImporter:
             amount_raw = row[amount_idx] if amount_idx < len(row) else ''
             paid_by_raw = row[paid_by_idx] if paid_by_idx < len(row) else ''
             split_raw = row[split_idx] if split_idx < len(row) else 'equal'
+            currency_raw = row[currency_idx].strip().upper() if (currency_idx != -1 and currency_idx < len(row)) else ''
+            split_with_raw = row[split_with_idx] if (split_with_idx != -1 and split_with_idx < len(row)) else ''
+            split_details_raw = row[split_details_idx] if (split_details_idx != -1 and split_details_idx < len(row)) else ''
             
             issues = []
             
@@ -195,6 +253,9 @@ class CSVExpenseImporter:
                 
             # 3. Clean Amount and check Currency
             currency, amount_clean = clean_amount_str(amount_raw)
+            if currency_raw == 'USD':
+                currency = 'USD'
+                
             try:
                 parsed_amount = Decimal(amount_clean)
             except InvalidOperation:
@@ -285,17 +346,65 @@ class CSVExpenseImporter:
                     'resolution_details': {'original_value': float(parsed_amount)}
                 })
 
-            # 7. Check splits & values for each user column
+            # 7. Check splits & values
             splits_parsed = {}
-            for h_idx, name in user_headers.items():
-                val_raw = row[h_idx] if h_idx < len(row) else ''
-                if val_raw.strip():
-                    try:
-                        # Clean and parse share value
-                        _, val_clean = clean_amount_str(val_raw)
-                        splits_parsed[name] = Decimal(val_clean)
-                    except InvalidOperation:
-                        pass
+            if split_with_idx != -1:
+                # New format: parse split_with and split_details
+                raw_splits = parse_splits_from_row(split_with_raw, split_details_raw, split_raw)
+                for name, val in raw_splits.items():
+                    user, is_exact, match_type = get_fuzzy_name_match(name, group_members)
+                    if user:
+                        splits_parsed[user.name.lower()] = val
+                        if not is_exact:
+                            issues.append({
+                                'type': 'fuzzy_name',
+                                'severity': 'warning',
+                                'description': f"Spelling mismatch: matched split participant '{name}' to member '{user.name}'",
+                                'resolution_selected': 'map_user',
+                                'resolution_details': {
+                                    'csv_name': name,
+                                    'user_id': str(user.id),
+                                    'user_name': user.name,
+                                    'user_email': user.email
+                                }
+                            })
+                    else:
+                        global_user = User.objects.filter(name__icontains=name.strip()).first()
+                        if global_user:
+                            issues.append({
+                                'type': 'fuzzy_name',
+                                'severity': 'warning',
+                                'description': f"Split participant '{name}' exists in system but is not in group members. Suggest adding them.",
+                                'resolution_selected': 'add_to_group',
+                                'resolution_details': {
+                                    'csv_name': name,
+                                    'user_id': str(global_user.id),
+                                    'user_name': global_user.name,
+                                    'user_email': global_user.email
+                                }
+                            })
+                        else:
+                            issues.append({
+                                'type': 'missing_data',
+                                'severity': 'critical',
+                                'description': f"Split participant '{name}' does not exist in group or system.",
+                                'resolution_selected': 'create_new_user',
+                                'resolution_details': {
+                                    'name': name,
+                                    'email': ''
+                                }
+                            })
+            else:
+                # Old format: Check splits & values for each user column
+                for h_idx, name in user_headers.items():
+                    val_raw = row[h_idx] if h_idx < len(row) else ''
+                    if val_raw.strip():
+                        try:
+                            # Clean and parse share value
+                            _, val_clean = clean_amount_str(val_raw)
+                            splits_parsed[name] = Decimal(val_clean)
+                        except InvalidOperation:
+                            pass
             
             # Check duplicate detection against already processed rows
             for prev in processed_rows:
@@ -519,7 +628,7 @@ class CSVExpenseImporter:
                     if iss_id_str in approved_issues_resolutions:
                         user_res = approved_issues_resolutions[iss_id_str]
                         res_choice = user_res.get('resolution_selected', res_choice)
-                        res_details = user_res.get('resolution_details', res_details)
+                        res_details = user_res.get('resolution_details') or res_details or {}
                     
                     if res_choice == 'map_user' and res_details:
                         mapped_uid = res_details.get('user_id')
@@ -590,23 +699,110 @@ class CSVExpenseImporter:
                 group_members[payer_user.name.lower()] = payer_user
 
             # Convert currency to INR
+            currency_col = next((h for h in headers if 'currency' in h.lower()), None)
+            currency_val = row_data.get(currency_col, '').strip().upper() if currency_col else ''
+            if currency_val == 'USD' or '$' in amount_val or 'usd' in amount_val.lower():
+                original_currency = 'USD'
+                if conversion_rate == Decimal('1.0'):
+                    conversion_rate = Decimal('83.50')
+
             inr_amount = parsed_amount
             if original_currency == 'USD':
                 inr_amount = (parsed_amount * conversion_rate).quantize(Decimal('0.01'))
 
             # Parse split participants
-            # Identify columns for each roommate
             roommate_splits = {}
-            for h in headers:
-                h_clean = h.lower().strip()
-                if h_clean in group_members:
-                    val = row_data[h]
-                    if val.strip():
-                        try:
-                            _, val_clean = clean_amount_str(val)
-                            roommate_splits[group_members[h_clean]] = Decimal(val_clean)
-                        except InvalidOperation:
-                            pass
+            split_with_col = next((h for h in headers if 'split_with' in h.lower() or 'split with' in h.lower()), None)
+            split_details_col = next((h for h in headers if 'split_details' in h.lower() or 'split details' in h.lower() or 'split_detail' in h.lower()), None)
+            
+            if split_with_col:
+                split_with_raw = row_data[split_with_col]
+                split_details_raw = row_data.get(split_details_col, '') if split_details_col else ''
+                raw_splits = parse_splits_from_row(split_with_raw, split_details_raw, split_val)
+                
+                for raw_name, val in raw_splits.items():
+                    resolved_user = None
+                    
+                    # Check if this name matches an issue resolution for this row
+                    for issue in row_issues:
+                        res_choice = issue.resolution_selected
+                        res_details = issue.resolution_details or {}
+                        
+                        iss_id_str = str(issue.id)
+                        if iss_id_str in approved_issues_resolutions:
+                            user_res = approved_issues_resolutions[iss_id_str]
+                            res_choice = user_res.get('resolution_selected', res_choice)
+                            res_details = user_res.get('resolution_details') or res_details or {}
+                            
+                        if res_details.get('csv_name', '').strip().lower() == raw_name:
+                            if res_choice == 'map_user' and res_details:
+                                mapped_uid = res_details.get('user_id')
+                                if mapped_uid:
+                                    resolved_user = group_users.get(mapped_uid)
+                                    if not resolved_user:
+                                        resolved_user = User.objects.filter(pk=mapped_uid).first()
+                                        if resolved_user:
+                                            group_users[mapped_uid] = resolved_user
+                            elif res_choice == 'add_to_group' and res_details:
+                                mapped_uid = res_details.get('user_id')
+                                if mapped_uid:
+                                    target_u = group_users.get(mapped_uid)
+                                    if not target_u:
+                                        target_u = User.objects.filter(pk=mapped_uid).first()
+                                        if target_u:
+                                            group_users[mapped_uid] = target_u
+                                    if target_u:
+                                        gm, created = GroupMember.objects.get_or_create(group=group, user=target_u)
+                                        if created:
+                                            MembershipHistory.objects.create(member=gm, joined_date=parsed_date)
+                                            member_timelines[target_u.id] = [(parsed_date, None)]
+                                        group_members[target_u.name.lower()] = target_u
+                                        resolved_user = target_u
+                            elif res_choice == 'create_new_user' and res_details:
+                                new_name = res_details.get('name')
+                                new_email = res_details.get('email')
+                                if new_name:
+                                    if new_name.lower() in group_members:
+                                        resolved_user = group_members[new_name.lower()]
+                                    else:
+                                        import random
+                                        if not new_email:
+                                            new_email = f"{new_name.lower().replace(' ', '_')}_{random.randint(1000, 9999)}@example.com"
+                                        target_u = User.objects.filter(email=new_email).first()
+                                        if not target_u:
+                                            target_u = User.objects.create_user(
+                                                email=new_email,
+                                                name=new_name,
+                                                password=User.objects.make_random_password()
+                                            )
+                                        gm, created = GroupMember.objects.get_or_create(group=group, user=target_u)
+                                        if created:
+                                            MembershipHistory.objects.create(member=gm, joined_date=parsed_date)
+                                            member_timelines[target_u.id] = [(parsed_date, None)]
+                                            group_users[str(target_u.id)] = target_u
+                                        group_members[target_u.name.lower()] = target_u
+                                        resolved_user = target_u
+                                        
+                    if not resolved_user:
+                        # Fallback to standard fuzzy match
+                        user, _, _ = get_fuzzy_name_match(raw_name, group_members)
+                        if user:
+                            resolved_user = user
+                            
+                    if resolved_user:
+                        roommate_splits[resolved_user] = val
+            else:
+                # Old format: Identify columns for each roommate
+                for h in headers:
+                    h_clean = h.lower().strip()
+                    if h_clean in group_members:
+                        val = row_data[h]
+                        if val.strip():
+                            try:
+                                _, val_clean = clean_amount_str(val)
+                                roommate_splits[group_members[h_clean]] = Decimal(val_clean)
+                            except InvalidOperation:
+                                pass
 
             if is_settlement_repayment:
                 # Import as Settlement

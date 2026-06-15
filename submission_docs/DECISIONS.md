@@ -71,3 +71,17 @@ Aisha requested "one number per person: who pays whom, how much, done." Direct p
 
 ### Why We Chose What We Chose
 We chose **Option B** but implemented it as an **interactive toggle**. This respects both Aisha's request for minimal transactions and Rohan's request for direct auditability. Roommates can toggle between the simplified graph (which minimizes overall transactions) and the raw chronological splits ledger.
+
+---
+
+## 6. Unresolved Payer Resolution & Session Mapping
+
+### Problem
+When importing large spreadsheet transactions, resolving names with minor typos, system matches, or completely new roommates becomes a bottleneck if the user is asked to configure each row individually.
+
+### Options Considered
+*   **Option A: Row-by-row mapping config (Default):** Prompts the user to configure each anomaly card independently.
+*   **Option B: Three-Action Unified UI with Session Propagation (Chosen):** Shows a clean 3-case card (Suggested Match with confirmation, Email Search with Add to Group, and Create User with optional Email details). Updates all identical payer occurrences automatically and caches them locally.
+
+### Why We Chose What We Chose
+We chose **Option B** to improve UX efficiency. If "Priya S" appears on 10 different rows, the user configures it once (e.g. creates a new user with name "Priya S" and email "priya@gmail.com") and all other 9 rows automatically resolve to that user. The backend also tracks and merges the newly created user in memory to prevent duplicate user/membership creation.
