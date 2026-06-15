@@ -8,17 +8,17 @@ This document lists the 12 data anomalies identified in the spreadsheet export (
 
 | # | Anomaly | Category | Detection Method | Backend/UI Resolution |
 |---|---------|----------|------------------|----------------------|
-| **1** | **USD vs INR Pretence** | Currency | Scans amount column values containing `$` or `USD`. | Staged in `ImportIssue` with `currency_conversion`. User edits the conversion rate in the UI (defaults to ₹83.50/$1). Auditable amounts saved. |
+| **1** | **USD vs INR Pretence** | Currency | Scans separate `currency` column and checks amount values containing `$` or `USD`. | Staged in `ImportIssue` with `currency_conversion`. User edits the conversion rate in the UI (defaults to ₹83.50/$1). Auditable amounts saved. |
 | **2** | **Duplicate Rows** | Deduplication | Computes duplicate confidence (95% same day/amount/payer/desc, 80% same date/amount/payer, 70% same desc/amount ±2 days). | Staged in `ImportIssue`. Displays confidence pills on UI. User can toggle "Skip Row (Recommended)" or "Import anyway". |
-| **3** | **Hardcoded Member Intervals** | Membership | Payer or splits contain names not active on the expense date. | Visually maps active timelines for roommates (Aisha, Rohan, Priya, Meera, Sam, Dev) using date inputs on UI. |
+| **3** | **Hardcoded Member Intervals** | Membership | Payer or split participants contain names not active on the expense date. | Visually maps active timelines for roommates (Aisha, Rohan, Priya, Meera, Sam, Dev) using date inputs on UI. |
 | **4** | **Negative Values (Refund/Settlement)** | Integrity | Numeric parser flags values $< 0$. | Selection dropdown: `Refund` (split negative values), `Settlement` (convert to pairwise repayment), `Correction` (convert to positive). |
 | **5** | **Missing Critical Data** | Integrity | Validates empty values for title, date, amount, or payer. | Flags row as `critical` severity. User resolves empty payer names using the unified three-case selection (Suggested Match / Email Search / Create User) inside the inline correction grid. |
-| **6** | **Fuzzy Roommate Names** | Matching | Edit distance (Levenshtein distance $\le 2$) and substring analysis match names. | Case 1: Suggested Match is shown with confirmation checkbox. Checked = mapped. Unchecked = fallback choices shown. |
+| **6** | **Fuzzy Roommate Names** | Matching | Edit distance (Levenshtein distance $\le 2$) and substring analysis match payer and split names. | Case 1: Suggested Match is shown with confirmation checkbox. Checked = mapped. Unchecked = fallback choices shown. |
 | **7** | **Settlement Logged as Expense** | Categorization | Regex matches keywords like "repay", "paid back", "settle" in title. | Recommends importing row as a `Settlement` instead of `Expense`. |
-| **8** | **Rounding Differences in Splits** | Split Math | Checks if sum of split shares matches total transaction amount. | Greedy remainder distribution. Evaluates splits using `compute_splits` and assigns rounding dust to the final split participant. |
-| **9** | **Exclusion of Inactive Roommates** | Temporal Split | Compares expense date against `MembershipHistory` active ranges. | Automatically filters split participants so members who left (Meera) or haven't joined (Sam) are not split-charged. |
-| **10** | **Name Spelling Variations** | Matching | Matches names with minor differences dynamically. | Dropdown selects user mapping, propagates mapping session-wide, and persists spelling-alias resolutions. |
-| **11** | **Unregistered System Users** | Matching | Scans global user directory if name matches but isn't group member. | Case 2: Displays email search input. If user found, "Add to group" option creates membership only. |
+| **8** | **Rounding Differences in Splits** | Split Math | Checks if sum of split shares matches total transaction amount using `parse_splits_from_row`. | Greedy remainder distribution. Evaluates splits using `compute_splits` and assigns rounding dust to the final split participant. |
+| **9** | **Exclusion of Inactive Roommates** | Temporal Split | Compares expense date against `MembershipHistory` active ranges for names parsed from `split_with`. | Automatically filters split participants so members who left (Meera) or haven't joined (Sam) are not split-charged. |
+| **10** | **Name Spelling Variations** | Matching | Matches payer and split names with minor differences dynamically. | Dropdown selects user mapping, propagates mapping session-wide, and persists spelling-alias resolutions. |
+| **11** | **Unregistered System Users** | Matching | Scans global user directory if payer or split name matches but isn't group member. | Case 2: Displays email search input. If user found, "Add to group" option creates membership only. |
 | **12** | **Zero-Split Inactive Windows** | Split Math | Checks if a temporal filter leaves a split calculation with zero users. | Prevents empty splits by validation middleware and prompts user to assign valid date or active payer. |
 
 ---
@@ -58,7 +58,7 @@ We implemented a strictly relational database structure using **PostgreSQL** to 
 
 ---
 
-### 2.2 Expense & Settlement Tables
+## 2.2 Expense & Settlement Tables
 
 #### `expenses`
 *   `id` (UUID, Primary Key)
@@ -92,7 +92,7 @@ We implemented a strictly relational database structure using **PostgreSQL** to 
 
 ---
 
-### 2.3 Staging Import Tables
+## 2.3 Staging Import Tables
 
 #### `import_jobs`
 *   `id` (UUID, Primary Key)
