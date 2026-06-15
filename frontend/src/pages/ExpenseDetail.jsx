@@ -155,10 +155,14 @@ export default function ExpenseDetail() {
                     {split.user?.name?.charAt(0)}
                   </div>
                   <div>
-                    <p className="text-sm font-medium text-slate-800">
+                    <p className="text-sm font-medium text-slate-800 flex items-center gap-1.5 flex-wrap">
                       {isMe ? 'You' : split.user?.name}
-                      {isPayer && (
-                        <span className="ml-1.5 text-xs bg-brand-50 text-brand-600 px-1.5 py-0.5 rounded-full">paid</span>
+                      {isPayer ? (
+                        <span className="text-xs bg-brand-50 text-brand-600 px-1.5 py-0.5 rounded-full font-medium">paid</span>
+                      ) : (
+                        <span className="text-[10px] text-slate-400 bg-slate-50 border border-slate-100/60 px-1.5 py-0.5 rounded-full font-medium">
+                          owes {expense.paid_by?.id === user?.id ? 'you' : expense.paid_by?.name}
+                        </span>
                       )}
                     </p>
                     {split.share_value != null && (

@@ -26,6 +26,23 @@ export default function ExpenseCard({ expense, groupId }) {
           {expense.notes && (
             <p className="text-xs text-slate-400 mt-1 truncate">{expense.notes}</p>
           )}
+          {expense.splits && expense.splits.length > 0 && (
+            <div className="flex flex-wrap gap-1.5 mt-2 pt-2 border-t border-slate-100/60">
+              {expense.splits.map((split) => {
+                if (split.user?.id === expense.paid_by?.id) return null;
+                const splitOwer = split.user?.id === user?.id ? 'you' : split.user?.name;
+                const splitPayee = expense.paid_by?.id === user?.id ? 'you' : expense.paid_by?.name;
+                return (
+                  <span
+                    key={split.id}
+                    className="text-[10px] bg-slate-50 border border-slate-100 text-slate-500 px-1.5 py-0.5 rounded-md font-medium"
+                  >
+                    {splitOwer} owes {splitPayee}: {formatINR(split.owed_amount)}
+                  </span>
+                );
+              })}
+            </div>
+          )}
         </div>
       </div>
       <div className="text-right flex-shrink-0 ml-3">
